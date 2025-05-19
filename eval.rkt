@@ -2,7 +2,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; CSCI 301, Spring 2025
 ;;
-;; Lab #4
+;; Lab #7
 ;;
 ;; Owen Kruse
 ;; W01600488
@@ -19,6 +19,27 @@
          evaluate-let          
          evaluate-special-form)
 
+;; Mutable Closures  ──────────────────────────────────────────────
+(define closure
+  (lambda (vars body env)
+    ;; 'closure  -> env  -> vars  -> body
+    (mcons 'closure (mcons env (mcons vars body)))))
+
+(define closure?
+  (lambda (clos) (and (mpair? clos) (eq? (mcar clos) 'closure))))
+
+(define closure-env
+  (lambda (clos) (mcar (mcdr clos))))
+
+(define closure-vars
+  (lambda (clos) (mcar (mcdr (mcdr clos)))))
+
+(define closure-body
+  (lambda (clos) (mcdr (mcdr (mcdr clos)))))
+
+(define set-closure-env!
+  (lambda (clos new-env) (set-mcar! (mcdr clos) new-env)))
+
 ;; Evaluate
 ;; Recursively evaluates expr in env
 (define evaluate
@@ -31,9 +52,7 @@
        (let* ([evaluated (map (lambda (e) (evaluate e env)) expr)]
               [operator (car evaluated)]
               [operands (cdr evaluated)])
-         (unless (procedure? operator)
-           (error '"Not a procedure..."))
-         ((lambda (proc args) (apply proc args)) operator operands))]
+           (apply-function operator operands))]
       [else (error '"Something bad happened in evaluate...")])))
 
 
@@ -55,25 +74,21 @@
 
 ;; Special Form?
 ;; Recognise the form and return a bool.
-(define special-form?
-  (lambda (expr)
-    (and (pair? expr)
-         (let ([tag (car expr)])
-           (or (eq? tag 'if)
-               (eq? tag 'cond)
-               (eq? tag 'let))))) )        
+(define (special-form? expr)
+  (and (pair? expr)
+       (memq (car expr) '(if cond let letrec lambda))))
 
 
 ;; Evaluate the special form.       
-(define evaluate-special-form
-  (lambda (form env)
-    (let ([tag (car form)]
-          [body (cdr form)])
-      (cond
-        [(eq? tag 'if)   (evaluate-if   body env)]
-        [(eq? tag 'cond) (evaluate-cond body env)]
-        [(eq? tag 'let)  (evaluate-let  body env)]
-        [else (error '"That isn't a part of the special form..." tag)]))))
+(define (evaluate-special-form form env)
+  (let* ([tag  (car form)]
+         [body (cdr form)])
+    (cond [(eq? tag 'if)     (evaluate-if    body env)]
+          [(eq? tag 'cond)   (evaluate-cond  body env)]
+          [(eq? tag 'let)    (evaluate-let   body env)]
+          [(eq? tag 'letrec)  (evaluate-letrec body env)]   
+          [(eq? tag 'lambda) (evaluate-lambda body env)]
+        [else (error '"That isn't a part of the special form..." tag)])))
 
 ; Evaluate if
 (define evaluate-if
@@ -111,11 +126,8 @@
            [body     (cdr pieces)])          
       (define symbols (map car  bindings))
       (define exprs   (map cadr bindings))
-
       (define values (map (lambda (e) (evaluate e env)) exprs))
-
-      (define new-env (append (map list symbols values) env))
-
+      (define new-env (append (map list symbols values) env)) 
       (evaluate-seq body new-env))))      
 
 
@@ -128,5 +140,36 @@
       [else (evaluate (car exprs) env)
             (evaluate-seq (cdr exprs) env)])))
 
-(let ((x 10))
-(+ (let ((x (+ x x))) (+ x x)) x))
+(define (apply-function func args)
+  (cond
+    [(procedure? func) (apply func args)]           
+    [(closure?   func) (apply-closure func args)] 
+    [else (error "That isn't a function or a closure" func)]))
+
+(define (apply-closure clos args)
+  (define vars (closure-vars clos))
+  (define body (closure-body clos))
+  (define saved-env (closure-env clos))
+  (unless (= (length vars) (length args))
+    (error "Length of vars and args should be the same"))
+  (define new-env (append (map list vars args) saved-env))
+  (evaluate body new-env))
+
+
+(define (evaluate-lambda pieces env)
+  (unless (and (pair? pieces) (pair? (cdr pieces)))
+    (error "Missing something when evaluating lambda :("))
+  (define vars  (car pieces))
+  (define body  (cadr pieces))         
+  (unless (and (list? vars) (andmap symbol? vars))
+    (error "list should be a list of symbols." vars))
+  (closure vars body env))
+
+;; evaluate-letrec 
+;; (letrec ((name expr) …) body …)
+;; 1.  build MiniEnv exactly like let        (closures still point to OldEnv)
+;; 2.  create NewEnv   = MiniEnv ⧺ OldEnv
+;; 3.  walk MiniEnv; when a value is a closure, patch its env pointer to NewEnv
+;; 4.  evaluate the body inside NewEnv
+(define evaluate-letrec
+  (lambda (pieces env)    
